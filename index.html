@@ -44,14 +44,21 @@ const defInv=()=>CATS.flatMap(c=>DEF[c].map(x=>({c,n:x,o:HARD.includes(c)?750:24
 const newDraft=()=>({date:today(),by:'',rev:'',cs:'',sales:{},ce:'',den:{},exp:[],sold:{},waste:[],fb:'',notes:''});
 function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),2200)}
 // storage
-async function load(){
- try{db=await claude.use('db')}catch(e){db=null}
- try{if(db){const c=await db.doc('app/config').get();if(c.exists)cfg=c.data();const d=await db.doc('app/draft').get();if(d.exists)D=d.data().d;const h=await db.collection('reports').get();hist=h.docs.map(x=>x.data())}
- else{cfg=JSON.parse(localStorage.getItem('cfg')||'null')||cfg;D=JSON.parse(localStorage.getItem('draft')||'null');hist=JSON.parse(localStorage.getItem('hist')||'[]')}}catch(e){}
+let sync=null,fail=null;
+try{sync=JSON.parse(localStorage.getItem('sync')||'null');const h=new URLSearchParams(location.hash.slice(1));if(h.get('u')){sync={url:h.get('u'),code:h.get('c')||''};localStorage.setItem('sync',JSON.stringify(sync));history.replaceState(null,'',location.pathname)}}catch(e){}
+async function api(b){const r=await fetch(sync.url,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({code:sync.code,...b})});const j=await r.json();if(j.error)throw new Error(j.error);return j}
+const lget=(k,d)=>{try{return JSON.parse(localStorage.getItem(k)||'null')||d}catch(e){return d}};
+async function load(){fail=null;
+ if(sync){try{const j=await api({op:'get'});if(j.cfg)cfg=j.cfg;if(j.draft)D=j.draft;hist=j.reports||[]}catch(e){fail=e.message||'No internet connection'}}
+ else{cfg=lget('cfg',cfg);D=lget('draft',null);hist=lget('hist',[])}
  if(!cfg.inv||!cfg.inv.length)cfg.inv=defInv();if(!D)D=newDraft();if(!D.sales)D.sales={};
  hist.sort((a,b)=>b.at>a.at?1:-1);R()}
-async function put(k,v){try{if(db){if(k==='cfg')await db.doc('app/config').set(v);else if(k==='draft')await db.doc('app/draft').set({d:v});else await db.doc('reports/'+v.id).set(v)}
- else{if(k==='hist')hist=[v,...hist],localStorage.setItem('hist',JSON.stringify(hist));else localStorage.setItem(k,JSON.stringify(v))}return true}catch(e){toast('Save failed');return false}}
+async function put(k,v){try{if(sync){if(k==='hist')return true;await api({op:'set',key:k,value:v})}else if(k==='hist'){hist=[v,...hist];localStorage.setItem('hist',JSON.stringify(hist))}else localStorage.setItem(k,JSON.stringify(v));return true}catch(e){toast('Save failed: '+(e.message||''));return false}}
+async function connect(){const u=$('su').value.trim(),c=$('sc').value.trim();if(!/^https:\/\/script\.google\.com\//.test(u))return alert('Paste the Web app URL from Apps Script (starts with https://script.google.com/)');
+ const old=sync;sync={url:u,code:c};
+ try{const j=await api({op:'get'});if(!j.cfg){await api({op:'set',key:'cfg',value:cfg});await api({op:'set',key:'draft',value:D})}
+  localStorage.setItem('sync',JSON.stringify(sync));toast('Connected');await load()}
+ catch(e){sync=old;alert('Could not connect: '+(e.message||'check the URL and code'))}}
 // calcs
 const key=i=>i.c+'|'+i.n;
 function calc(){const till=+cfg.till||250,cs=n(D.cs),sl=D.sales||{},gross=Math.round((cs+['uber','et','visa','dd','skip'].reduce((a,k)=>a+n(sl[k]),0))*100)/100,hst=Math.round(gross*13)/100,net=Math.round((gross-hst)*100)/100,ce=D.exp.reduce((s,e)=>s+n(e.amt),0)+n(D.ce);
@@ -62,16 +69,20 @@ function calc(){const till=+cfg.till||250,cs=n(D.cs),sl=D.sales||{},gross=Math.r
  return{gross,hst,net,till,cs,ce,exp,env,phys,diff,alc}}
 const st=d=>d<-0.004?f(-d)+' SHORT':d>0.004?f(d)+' OVER':'$0.00 BALANCED';
 function text(d,c){const L=[];const P=x=>L.push(x);
- P('THE BIRYANIWALLA\nDAILY CLOSING REPORT');P('Date: '+d.date);P('Closed By: '+(d.by||'-'));P('Number of Reviews Today: '+n(d.rev));
- P('\nSALES');[['Uber','uber'],['E-transfer','et'],['Visa','visa'],['Doordash','dd']].forEach(([l,k])=>P(l+': '+f(n((d.sales||{})[k]))));P('Cash: '+f(c.cs));P('Skip: '+f(n((d.sales||{}).skip)));P('Gross Total: '+f(c.gross));P('HST 13%: '+f(c.hst));P('Net Total: '+f(c.net));P('\nCASH CLOSING');P('Opening Till: '+f(c.till));P('Cash Sales: '+f(c.cs));P('Cash Expenses: '+f(c.ce));P('Expected Till: '+f(c.exp));P('Physical Till: '+f(c.phys));P('Cash Difference: '+st(c.diff));P('Expected Cash in Envelope: '+f(c.env));P('Leave in Till: '+f(c.till));
- P('\nDENOMINATIONS');DEN.forEach(([l,v])=>{const q=n(d.den[l]);if(q)P(l+' × '+q+' = '+f(q*v))});
- if(d.exp.length){P('\nEXPENSES');d.exp.forEach(e=>P('- '+(e.n||'Expense')+': '+f(n(e.amt))+(e.note?' ('+e.note+')':'')))}
- P('\nALCOHOL');CATS.forEach(cat=>{const r=c.alc.filter(a=>a.c===cat);if(!r.length)return;P(cat.toUpperCase());r.forEach(a=>P(HARD.includes(cat)?`${a.n}: Open ${a.o}ml | 30ml×${n(a.s.a)} 60ml×${n(a.s.b)} | Used ${a.used}ml | Avail ${a.avail}ml`:`${a.n}: Open ${a.o} | Sold ${n(a.s.s)} | Avail ${a.avail}`))});
- P('\nWASTAGE');d.waste.length?d.waste.forEach(w=>P('- '+w.i+' | '+w.q+(w.note?' | '+w.note:''))):P('None');
- P('\nCUSTOMER FEEDBACK / COMPLAINTS\n'+(d.fb||'None'));P('\nNOTES\n'+(d.notes||'None'));return L.join('\n')}
+ P('THE BIRYANIWALLA');P('DAILY CLOSING REPORT');P('Date: '+d.date);P('Closed By: '+(d.by||'-'));P('Reviews Today: '+n(d.rev));
+ const sl=d.sales||{};const salesLines=[['Uber','uber'],['E-transfer','et'],['Visa','visa'],['Doordash','dd'],['Skip','skip']].filter(([l,k])=>n(sl[k]));
+ if(salesLines.length||c.cs){P('\nSALES');salesLines.forEach(([l,k])=>P(l+': '+f(n(sl[k]))));P('Cash: '+f(c.cs));P('Gross Total: '+f(c.gross));P('HST 13%: '+f(c.hst));P('Net Total: '+f(c.net))}
+ P('\nCASH CLOSING');P('Expected Till: '+f(c.exp));P('Physical Till: '+f(c.phys));P('Cash Difference: '+st(c.diff));P('Cash in Envelope: '+f(c.env));
+ if(d.exp.length){const tot=d.exp.reduce((s2,e)=>s2+n(e.amt),0);P('\nEXPENSES: '+f(tot))}
+ const activeAlc=c.alc.filter(a=>a.used>0);
+ if(activeAlc.length){P('\nALCOHOL SOLD');CATS.forEach(cat=>{const r=activeAlc.filter(a=>a.c===cat);if(!r.length)return;r.forEach(a=>P(HARD.includes(cat)?`${a.n}: ${n(a.s.a)}×30ml, ${n(a.s.b)}×60ml (Avail ${a.avail}ml)`:`${a.n}: Sold ${n(a.s.s)} (Avail ${a.avail})`))})}
+ if(d.waste.length)P('\nWASTAGE: '+d.waste.map(w=>w.i+' '+w.q).join(', '));
+ if(d.fb&&d.fb.trim())P('\nFEEDBACK/COMPLAINTS: '+d.fb);
+ if(d.notes&&d.notes.trim())P('\nNOTES: '+d.notes);
+ return L.join('\n')}
 // UI
 function R(){$('nav').innerHTML=TABS.map(t=>`<button class="${t==tab?'on':''}" onclick="tab='${t}';R()">${t=='Notes'?'Details':t}</button>`).join('');
- const m=$('m');m.innerHTML=({Cash,Alcohol,Notes,Report,History})[tab]();U()}
+ const m=$('m');if(fail){m.innerHTML='<div class="card"><h2>CANNOT REACH SHARED SHEET</h2><p>'+esc(fail)+'</p><p class="mut">Check the internet connection and try again. Nothing was changed.</p><button class="btn p" onclick="load()">Retry</button></div>';return}m.innerHTML=({Cash,Alcohol,Notes,Report,History})[tab]();U()}
 const bind=(p,k,t)=>`value="${(p[k]??'')}" oninput="${t}"`;
 function Cash(){return `<div class="card"><h2>GENERAL</h2><label>Date</label><input type="date" ${bind(D,'date','D.date=this.value')}><label>Closed By</label><input ${bind(D,'by','D.by=this.value')} placeholder="Your name"><label>Number of Reviews Today</label><input type="number" inputmode="numeric" min="0" ${bind(D,'rev','D.rev=this.value')}></div>
 <div class="card"><h2>SALES BY TYPE</h2>${[['Uber','uber'],['E-transfer','et'],['Visa','visa'],['Doordash','dd']].map(([l,k])=>`<div class="row"><b style="flex:none;width:96px">${l}</b><input type="number" inputmode="decimal" min="0" placeholder="0.00" ${bind(D.sales,k,`D.sales.${k}=this.value;U()`)}></div>`).join('')}<div class="row"><b style="flex:none;width:96px">Cash</b><input type="number" inputmode="decimal" min="0" placeholder="0.00" ${bind(D,'cs','D.cs=this.value;U()')}></div><div class="row"><b style="flex:none;width:96px">Skip</b><input type="number" inputmode="decimal" min="0" placeholder="0.00" ${bind(D.sales,'skip','D.sales.skip=this.value;U()')}></div><div class="sum"><div><span>Gross Total</span><b id="gt"></b></div><div><span>HST 13%</span><b id="hs"></b></div><div><span>Net Total</span><b id="nt"></b></div></div></div>
@@ -80,7 +91,7 @@ function Cash(){return `<div class="card"><h2>GENERAL</h2><label>Date</label><in
 <h2 style="margin-top:14px">EXPENSES</h2>${D.exp.map((e,i)=>`<div class="it"><input placeholder="Store / type" ${bind(e,'n',`D.exp[${i}].n=this.value`)}><div class="row"><input type="number" inputmode="decimal" placeholder="Amount" ${bind(e,'amt',`D.exp[${i}].amt=this.value;U()`)}><input placeholder="Note" ${bind(e,'note',`D.exp[${i}].note=this.value`)}><button class="btn w" onclick="D.exp.splice(${i},1);R()">✕</button></div></div>`).join('')}<button class="btn" onclick="D.exp.push({});R()">+ Add Expense</button><div class="mut" style="margin-top:6px">Total expenses: <b id="ce"></b></div></div>
 <div class="card"><h2>COUNT THE TILL</h2>${DEN.map(([l,v])=>`<div class="row"><b style="flex:none;width:52px">${l}</b><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(D.den,l,`D.den['${l}']=this.value;U()`)}><span class="w" id="d${v}" style="width:80px;text-align:right"></span></div>`).join('')}</div>
 <div class="card sum"><h2>CASH SUMMARY</h2>${['Opening Till|o','Cash Sales|cs2','Cash Expenses|ce2','Expected Till|ex','Physical Till|ph','Expected Cash in Envelope|en','Leave in Till|lv'].map(x=>{const[a,b]=x.split('|');return`<div><span>${a}</span><b id="s_${b}"></b></div>`}).join('')}<div class="big" id="diff"></div></div>`}
-function Alcohol(){const c=calc();return `<div class="mut" style="margin-bottom:8px">${mgr?'Manager mode: edit opening stock':'Enter sold quantities only'} · <a href="#" style="color:var(--gold)" onclick="mgrToggle();return false">${mgr?'Exit manager':'Manager login'}</a></div>`+CATS.map(cat=>`<div class="card"><h2>${cat.toUpperCase()}</h2>${c.alc.filter(a=>a.c===cat).map(a=>{const k=key(a),H=HARD.includes(cat);return`<div class="it"><b>${a.n} ${mgr?`<button class="btn w" style="padding:3px 8px;font-size:12px;width:auto" onclick="delItem('${k}')">remove</button>`:''}</b><div class="g3">${H?`<div><label>Opening ML</label>${mgr?`<input type="number" value="${a.o}" onchange="setOpen('${k}',this.value)">`:`<input readonly value="${a.o}">`}</div><div><label>30 ML sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'a',`sd('${k}','a',this.value)`)}></div><div><label>60 ML sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'b',`sd('${k}','b',this.value)`)}></div>`:`<div><label>Opening</label>${mgr?`<input type="number" value="${a.o}" onchange="setOpen('${k}',this.value)">`:`<input readonly value="${a.o}">`}</div><div><label>Sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'s',`sd('${k}','s',this.value)`)}></div>`}<div><label>Available</label><input readonly id="av_${k.replace(/\W/g,'_')}"></div></div>${H?`<div class="mut" id="us_${k.replace(/\W/g,'_')}"></div>`:''}</div>`}).join('')}</div>`).join('')+(mgr?`<div class="card"><h2>+ ADD ALCOHOL ITEM</h2><select id="ac">${CATS.map(c=>`<option>${c}</option>`).join('')}</select><label>Item name</label><input id="an"><label>Opening quantity / ML</label><input id="ao" type="number"><div style="height:8px"></div><button class="btn p" onclick="addItem()">Add Item</button></div>`:'')}
+function Alcohol(){const c=calc();return `<div class="mut" style="margin-bottom:8px">${mgr?'Manager mode: edit opening stock':'Enter sold quantities only'} · <a href="#" style="color:var(--gold)" onclick="mgrToggle();return false">${mgr?'Exit manager':'Manager login'}</a></div>`+CATS.map(cat=>`<div class="card"><h2>${cat.toUpperCase()}</h2>${c.alc.filter(a=>a.c===cat).map(a=>{const k=key(a),H=HARD.includes(cat);return`<div class="it"><b>${a.n} ${mgr?`<button class="btn w" style="padding:3px 8px;font-size:12px;width:auto" onclick="delItem('${k}')">remove</button>`:''}</b><div class="g3">${H?`<div><label>Opening ML</label>${mgr?`<input type="number" value="${a.o}" onchange="setOpen('${k}',this.value)">`:`<input readonly value="${a.o}">`}</div><div><label>30 ML sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'a',`sd('${k}','a',this.value)`)}></div><div><label>60 ML sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'b',`sd('${k}','b',this.value)`)}></div>`:`<div><label>Opening</label>${mgr?`<input type="number" value="${a.o}" onchange="setOpen('${k}',this.value)">`:`<input readonly value="${a.o}">`}</div><div><label>Sold</label><input type="number" inputmode="numeric" min="0" placeholder="0" ${bind(a.s,'s',`sd('${k}','s',this.value)`)}></div>`}<div><label>Available</label><input readonly id="av_${k.replace(/\W/g,'_')}"></div></div>${H?`<div class="mut" id="us_${k.replace(/\W/g,'_')}"></div>`:''}</div>`}).join('')}</div>`).join('')+(mgr?`<div class="card"><h2>+ ADD ALCOHOL ITEM</h2><select id="ac">${CATS.map(c=>`<option>${c}</option>`).join('')}</select><label>Item name</label><input id="an"><label>Opening quantity / ML</label><input id="ao" type="number"><div style="height:8px"></div><button class="btn p" onclick="addItem()">Add Item</button></div><div class="card"><h2>SHARED SHEET</h2><div class="mut">${sync?'Connected ✓ — all phones share the same stock':'Not connected — data stays on this device only'}</div><label>Web app URL</label><input id="su" value="${sync?esc(sync.url).replace(/"/g,'&quot;'):''}"><label>Staff code</label><input id="sc" value="${sync?esc(sync.code).replace(/"/g,'&quot;'):''}"><div style="height:8px"></div><button class="btn p" onclick="connect()">Connect</button>${sync?`<label>Staff link — send this on WhatsApp</label><input readonly onclick="this.select()" value="${esc(location.origin+location.pathname+'#u='+encodeURIComponent(sync.url)+'&c='+encodeURIComponent(sync.code)).replace(/"/g,'&quot;')}">`:''}</div>`:'')}
 function Notes(){return `<div class="card"><h2>WASTAGE</h2>${D.waste.map((w,i)=>`<div class="it"><input placeholder="Item" ${bind(w,'i',`D.waste[${i}].i=this.value`)}><div class="row"><input placeholder="Qty / %" ${bind(w,'q',`D.waste[${i}].q=this.value`)}><input placeholder="Notes" ${bind(w,'note',`D.waste[${i}].note=this.value`)}><button class="btn w" onclick="D.waste.splice(${i},1);R()">✕</button></div></div>`).join('')}<button class="btn" onclick="D.waste.push({});R()">+ Add Wastage</button></div>
 <div class="card"><h2>CUSTOMER FEEDBACK / COMPLAINTS</h2><textarea oninput="D.fb=this.value">${D.fb}</textarea></div><div class="card"><h2>GENERAL CLOSING NOTES</h2><textarea oninput="D.notes=this.value">${D.notes}</textarea></div>`}
 function Report(){return `<div class="card"><h2>REPORT PREVIEW</h2><pre>${esc(text(D,calc()))}</pre><button class="btn" onclick="share()">Share / Copy Report</button></div>`}
@@ -97,18 +108,18 @@ function mgrToggle(){if(mgr){mgr=false}else{const p=prompt('Manager PIN');if(p==
 async function setOpen(k,v){const i=cfg.inv.find(x=>key(x)==k);i.o=n(v);await put('cfg',cfg);R()}
 async function delItem(k){if(!confirm('Remove item?'))return;cfg.inv=cfg.inv.filter(x=>key(x)!=k);await put('cfg',cfg);R()}
 async function addItem(){const nm=$('an').value.trim();if(!nm)return toast('Enter a name');cfg.inv.push({c:$('ac').value,n:nm,o:n($('ao').value)});await put('cfg',cfg);R()}
-async function saveDraft(){if(await put('draft',D))toast('Draft saved')}
+async function saveDraft(){if(fail)return;if(await put('draft',D))toast('Draft saved')}
 async function share(){const t=text(D,calc());if(navigator.share){try{await navigator.share({title:'Daily Closing Report',text:t});return}catch(e){if(e.name==='AbortError')return}}
  try{await navigator.clipboard.writeText(t);toast('Report copied')}catch(e){tab='Report';R();toast('Select & copy the report')}}
-async function complete(){if(busy)return;const c=calc(),err=[];
+async function complete(){if(busy||fail)return;const c=calc(),err=[];
  if(!D.by.trim())err.push('Enter "Closed By"');if(D.rev==='')err.push('Enter number of reviews');if(D.cs==='')err.push('Enter cash sales');if(!c.phys)err.push('Count the till');if(c.alc.some(a=>a.over))err.push('Sold exceeds opening stock for some alcohol');
  if(hist.some(h=>h.date===D.date&&h.status==='Completed')&&!confirm('A closing for '+D.date+' already exists. Complete another?'))return;
  if(err.length)return alert(err.join('\n'));
  if(!confirm("Complete today's closing? This will save the final report and roll available alcohol inventory into the next opening stock."))return;
  busy=true;const rep={id:'r'+Date.now(),at:new Date().toISOString(),date:D.date,by:D.by,rev:n(D.rev),diff:c.diff,env:c.env,status:'Completed',text:text(D,c),data:D};
- if(!(await put('hist',rep))){busy=false;return}
- cfg.inv=cfg.inv.map(i=>({...i,o:c.alc.find(a=>key(a)==key(i)).avail}));
- if(!(await put('cfg',cfg))){busy=false;return alert('Report saved but inventory roll failed. Ask a manager to correct opening stock.')}
- if(db)hist=[rep,...hist];D=newDraft();await put('draft',D);busy=false;tab='History';R();toast('Closing completed')}
+ const nc={...cfg,inv:cfg.inv.map(i=>({...i,o:c.alc.find(a=>key(a)==key(i)).avail}))},nd=newDraft();
+ if(sync){try{const j=await api({op:'complete',report:rep,cfg:nc,draft:nd});if(j.dup){busy=false;return alert('This closing was already completed.')}hist=[rep,...hist]}catch(e){busy=false;return alert('NOT saved: '+(e.message||'no internet')+'. Check the connection and press Complete Closing again.')}}
+ else{if(!(await put('hist',rep))){busy=false;return}if(!(await put('cfg',nc))){busy=false;return alert('Report saved but inventory roll failed. Ask a manager to correct opening stock.')}await put('draft',nd)}
+ cfg=nc;D=nd;busy=false;tab='History';R();toast('Closing completed')}
 load();
 </script></body></html>
